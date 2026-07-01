@@ -13,6 +13,7 @@ CONFIG_PATH = ROOT / "config.json"
 MANIFEST_PATH = ROOT / "manifest.json"
 AUDIO_DIR = ROOT / "audio"
 FEED_PATH = ROOT / "feed.xml"
+COVER_PATH = ROOT / "cover.jpg"
 
 
 def load_json(path, default):
@@ -53,6 +54,39 @@ def download_audio(video_id):
     return mp3_path
 
 
+def probe_duration_seconds(mp3_path):
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(mp3_path),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    return int(round(float(result.stdout.strip())))
+
+
+def ensure_cover_image(video_id):
+    if COVER_PATH.exists():
+        return
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    subprocess.run(
+        ["yt-dlp", "--no-playlist", "--skip-download", "--write-thumbnail",
+         "-o", str(ROOT / "cover_source"), url],
+        check=True,
+    )
+    sources = list(ROOT.glob("cover_source.*"))
+    if not sources:
+        return
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(sources[0]),
+         "-vf", "scale=1400:1400:force_original_aspect_ratio=increase,crop=1400:1400",
+         str(COVER_PATH)],
+        check=True, capture_output=True,
+    )
+    for f in sources:
+        f.unlink()
+
+
 def fetch_title(video_id):
     url = f"https://www.youtube.com/watch?v={video_id}"
     result = subprocess.run(
@@ -66,16 +100,21 @@ def build_feed(config, episodes):
     base_url = config["pages_base_url"].rstrip("/")
     title = escape(config["title"])
     description = escape(config.get("description", ""))
+    cover_url = f"{base_url}/cover.jpg"
     items = []
     for ep in sorted(episodes, key=lambda e: e["pub_date"], reverse=True):
         pub_dt = datetime.fromisoformat(ep["pub_date"])
         pub_rfc822 = format_datetime(pub_dt)
         enclosure_url = f"{base_url}/audio/{ep['id']}.mp3"
+        ep_title = escape(ep["title"])
         items.append(f"""
     <item>
-      <title>{escape(ep['title'])}</title>
+      <title>{ep_title}</title>
+      <description>{ep_title}</description>
       <guid isPermaLink="false">{ep['id']}</guid>
       <pubDate>{pub_rfc822}</pubDate>
+      <itunes:duration>{ep['duration']}</itunes:duration>
+      <itunes:explicit>false</itunes:explicit>
       <enclosure url="{escape(enclosure_url)}" type="audio/mpeg" length="{ep['size']}" />
     </item>""")
 
@@ -86,6 +125,15 @@ def build_feed(config, episodes):
     <link>{escape(base_url)}</link>
     <description>{description}</description>
     <itunes:author>{title}</itunes:author>
+    <itunes:summary>{description}</itunes:summary>
+    <itunes:explicit>false</itunes:explicit>
+    <itunes:image href="{escape(cover_url)}" />
+    <itunes:category text="Kids &amp; Family" />
+    <image>
+      <url>{escape(cover_url)}</url>
+      <title>{title}</title>
+      <link>{escape(base_url)}</link>
+    </image>
     <language>en-us</language>{''.join(items)}
   </channel>
 </rss>
@@ -117,14 +165,25 @@ def main():
             print(f"  failed to download {vid}: {e}", file=sys.stderr)
             continue
         title = entry.get("title") or fetch_title(vid)
+        ensure_cover_image(vid)
         manifest["episodes"].append({
             "id": vid,
             "title": title,
             "pub_date": datetime.now(timezone.utc).isoformat(),
             "size": mp3_path.stat().st_size,
+            "duration": probe_duration_seconds(mp3_path),
         })
         known_ids.add(vid)
         new_count += 1
+
+    # backfill duration for episodes downloaded before this field existed
+    for ep in manifest["episodes"]:
+        if "duration" not in ep:
+            mp3_path = AUDIO_DIR / f"{ep['id']}.mp3"
+            ep["duration"] = probe_duration_seconds(mp3_path)
+
+    if manifest["episodes"]:
+        ensure_cover_image(manifest["episodes"][0]["id"])
 
     save_json(MANIFEST_PATH, manifest)
     build_feed(config, manifest["episodes"])
