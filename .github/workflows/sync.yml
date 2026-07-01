@@ -38,3 +38,8 @@ jobs:
             git commit -m "Sync new episodes"
             git push
           fi
+
+      - name: Trigger Pages rebuild
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X POST repos/${{ github.repository }}/pages/builds
