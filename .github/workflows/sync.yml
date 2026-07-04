@@ -1,4 +1,4 @@
-name: Sync playlist to podcast feed
+name: Sync playlist to Yoto card
 
 on:
   schedule:
@@ -25,21 +25,27 @@ jobs:
           pip install -U yt-dlp
 
       - name: Run sync
-        run: python scripts/sync.py
+        id: sync
+        env:
+          YOTO_CLIENT_ID: ${{ secrets.YOTO_CLIENT_ID }}
+          YOTO_REFRESH_TOKEN: ${{ secrets.YOTO_REFRESH_TOKEN }}
+        run: python scripts/sync_to_yoto.py
+
+      - name: Persist rotated refresh token
+        if: always() && steps.sync.outputs.refresh_token != ''
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_ADMIN_TOKEN }}
+        run: |
+          gh secret set YOTO_REFRESH_TOKEN --body "${{ steps.sync.outputs.refresh_token }}" --repo ${{ github.repository }}
 
       - name: Commit and push changes
         run: |
           git config user.name "yoto-podcast-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add audio manifest.json feed.xml
+          git add manifest.json config.json
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
             git commit -m "Sync new episodes"
             git push
           fi
-
-      - name: Trigger Pages rebuild
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api -X POST repos/${{ github.repository }}/pages/builds

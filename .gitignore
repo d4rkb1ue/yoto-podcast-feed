@@ -1,1 +1,4 @@
 .DS_Store
+.yoto_tokens.json
+.work/
+__pycache__/
