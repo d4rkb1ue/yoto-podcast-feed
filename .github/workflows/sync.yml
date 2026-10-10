@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: yoto-playlist-sync
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -35,8 +39,19 @@ jobs:
         if: always() && steps.sync.outputs.refresh_token != ''
         env:
           GH_TOKEN: ${{ secrets.SECRETS_ADMIN_TOKEN }}
+          YOTO_ROTATED_REFRESH_TOKEN: ${{ steps.sync.outputs.refresh_token }}
         run: |
-          gh secret set YOTO_REFRESH_TOKEN --body "${{ steps.sync.outputs.refresh_token }}" --repo ${{ github.repository }}
+          for attempt in 1 2 3 4 5; do
+            if printf '%s' "$YOTO_ROTATED_REFRESH_TOKEN" | gh secret set YOTO_REFRESH_TOKEN --repo "$GITHUB_REPOSITORY"; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              echo "Saving rotated refresh token failed; retrying (attempt $attempt/5)."
+              sleep "$((attempt * 5))"
+            fi
+          done
+          echo "::error::Could not save rotated Yoto refresh token after 5 attempts. Reauthorization may be required."
+          exit 1
 
       - name: Commit and push changes
         run: |
