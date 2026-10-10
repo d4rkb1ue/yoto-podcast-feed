@@ -88,11 +88,13 @@ def download_thumbnail(video_id, dest_dir):
          "-o", out_template, url],
         check=True,
     )
-    matches = [p for p in dest_dir.glob(f"{video_id}_thumb.*") if p.suffix != ".jpg"]
+    jpg_path = dest_dir / f"{video_id}_thumb.jpg"
+    if jpg_path.exists():
+        return jpg_path
+    matches = list(dest_dir.glob(f"{video_id}_thumb.*"))
     if not matches:
         raise RuntimeError(f"no thumbnail downloaded for {video_id}")
     source = matches[0]
-    jpg_path = dest_dir / f"{video_id}_thumb.jpg"
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(source), str(jpg_path)],
         check=True, capture_output=True,
@@ -175,6 +177,7 @@ def main():
 
     entries = fetch_playlist_entries(config["playlist_url"])
     new_count = 0
+    failed_ids = []
     for entry in entries:
         vid = entry.get("id")
         if not vid or vid in known_ids:
@@ -184,14 +187,15 @@ def main():
             episode = sync_new_episode(entry, access_token, WORK_DIR)
         except Exception as e:
             print(f"  failed to sync {vid}: {e}", file=sys.stderr)
+            failed_ids.append(vid)
             continue
         manifest["episodes"].append(episode)
         known_ids.add(vid)
         new_count += 1
 
-    save_json(MANIFEST_PATH, manifest)
-
     if new_count == 0:
+        if failed_ids:
+            raise RuntimeError(f"Failed to sync {len(failed_ids)} video(s): {', '.join(failed_ids)}")
         print("No new episodes, skipping card update.")
         return
 
@@ -207,12 +211,17 @@ def main():
         body["cardId"] = config["cardId"]
 
     card = yoto_client.create_or_update_content(access_token, body)
+    # Only mark episodes synced after the card update succeeds, so a failed
+    # update is retried rather than leaving songs recorded but unplayable.
+    save_json(MANIFEST_PATH, manifest)
     if not config.get("cardId"):
         config["cardId"] = card["cardId"]
         save_json(CONFIG_PATH, config)
         print(f"Created card: {card['cardId']}")
 
     print(f"Done. {new_count} new episode(s) added. {len(manifest['episodes'])} total.")
+    if failed_ids:
+        raise RuntimeError(f"Failed to sync {len(failed_ids)} video(s): {', '.join(failed_ids)}")
 
 
 if __name__ == "__main__":

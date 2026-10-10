@@ -54,6 +54,7 @@ jobs:
           exit 1
 
       - name: Commit and push changes
+        if: always() && !cancelled() && steps.sync.outcome != 'skipped'
         run: |
           git config user.name "yoto-podcast-bot"
           git config user.email "actions@users.noreply.github.com"
